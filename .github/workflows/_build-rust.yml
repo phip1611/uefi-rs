@@ -1,0 +1,97 @@
+# Reusable GitHub CI workflow:
+# More info: https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#jobsjob_iduses
+
+# Common Rust CI setup that checkout the repo, installs the common toolchain
+# and set's up the cargo cache. It builds, tests, and lints the code.
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        type: string
+        required: false
+        default: ubuntu-latest
+      rust-version:
+        type: string
+        required: false
+        default: stable
+        description: Rust version
+      rust-target:
+        type: string
+        required: false
+        default: x86_64
+        description: "Cargo xtask targets: x86_64|aarch64|ia32"
+      do-style-check:
+        type: boolean
+        required: false
+        default: true
+        description: Perform code and doc style checks.
+      do-test:
+        type: boolean
+        required: false
+        default: true
+        description: Execute unit tests.
+      do-integration-test:
+        type: boolean
+        required: false
+        default: true
+        description: Execute integration tests.
+
+jobs:
+  rust:
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v3
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: ${{ inputs.rust-version }}
+          override: true
+          components: clippy, rustfmt
+          target: aarch64-unknown-uefi, i686-unknown-uefi, x86_64-unknown-uefi
+      - name: Set up cargo cache
+        uses: actions/cache@v3
+        continue-on-error: false
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-rust-${{ inputs.rust-version }}-cargo-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}
+
+      - run: cargo version
+
+      - name: Build
+        run: cargo xtask build --target ${{ inputs.rust-target }}
+
+      - name: Build with permutations
+        if: ${{ inputs.rust-version  }} == "nightly"
+        run: cargo xtask build --target ${{ inputs.rust-target }} --feature-permutations
+
+      - name: Code Formatting
+        if: ${{ inputs.do-style-check }}
+        run: cargo fmt --all -- --check
+
+      - name: Code Style and Doc Style
+        if: ${{ inputs.do-style-check }}
+        run: |
+          cargo doc --warnings-as-errors --document-private-items
+          cargo xtask clippy --warnings-as-errors
+
+      - name: Unit Test
+        if: ${{ inputs.do-test }} && ${{ inputs.rust-version }} != "nightly"
+        run: cargo xtask test
+
+      - name: Unit Test (with unstable)
+        if: ${{ inputs.do-test }} && ${{ inputs.rust-version }} == "nightly"
+        run: cargo xtask test --unstable
+
+      - name: Unit Tests with Miri (with unstable)
+        if: ${{ inputs.do-test }} && ${{ inputs.rust-version }} == "nightly"
+        run: |
+          rustup component add miri
+          cargo xtask test --unstable
